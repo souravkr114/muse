@@ -22,8 +22,9 @@ from google.genai import types
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-DB_PATH = str(ROOT_DIR / "muse.db")
+DB_PATH = os.environ.get("DATABASE_URL", str(ROOT_DIR / "muse.db"))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
 JWT_SECRET = os.environ.get("JWT_SECRET", "super-secret-muse-key-12345")
 
 JWT_ALGORITHM = "HS256"
