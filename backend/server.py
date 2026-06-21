@@ -22,9 +22,8 @@ from google.genai import types
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-DB_PATH = os.environ.get("DATABASE_URL", str(ROOT_DIR / "muse.db"))
+DB_URL = os.environ.get("DATABASE_URL", str(ROOT_DIR / "muse.db"))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
 JWT_SECRET = os.environ.get("JWT_SECRET", "super-secret-muse-key-12345")
 
 JWT_ALGORITHM = "HS256"
@@ -40,38 +39,95 @@ bearer = HTTPBearer(auto_error=False)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("muse")
 
-# ---------- Database Initialization ----------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            password_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS quotes (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            quote TEXT NOT NULL,
-            attribution TEXT NOT NULL,
-            mood TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            input_preview TEXT NOT NULL,
-            image_thumb TEXT,
-            is_favorite INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        )
-    """)
-    conn.commit()
-    conn.close()
+# ---------- Dual Database Adapter (SQLite & PostgreSQL) ----------
+class Database:
+    def __init__(self, url: str):
+        self.url = url
+        self.is_postgres = url.startswith("postgres://") or url.startswith("postgresql://")
+        logger.info(f"Database initialized. Type: {'PostgreSQL' if self.is_postgres else 'SQLite'}")
 
-init_db()
+    def get_connection(self):
+        if self.is_postgres:
+            import psycopg2
+            conn_url = self.url
+            if conn_url.startswith("postgres://"):
+                conn_url = conn_url.replace("postgres://", "postgresql://", 1)
+            return psycopg2.connect(conn_url)
+        else:
+            conn = sqlite3.connect(self.url)
+            conn.row_factory = sqlite3.Row
+            return conn
+
+    def execute(self, query: str, params: tuple = ()) -> int:
+        if self.is_postgres:
+            query = query.replace("?", "%s")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        rowcount = cursor.rowcount
+        conn.close()
+        return rowcount
+
+    def fetchone(self, query: str, params: tuple = ()) -> Optional[dict]:
+        if self.is_postgres:
+            query = query.replace("?", "%s")
+        conn = self.get_connection()
+        if self.is_postgres:
+            from psycopg2.extras import RealDictCursor
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def fetchall(self, query: str, params: tuple = ()) -> List[dict]:
+        if self.is_postgres:
+            query = query.replace("?", "%s")
+        conn = self.get_connection()
+        if self.is_postgres:
+            from psycopg2.extras import RealDictCursor
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            cursor = conn.cursor()
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def init_db(self):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quotes (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                quote TEXT NOT NULL,
+                attribution TEXT NOT NULL,
+                mood TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                input_preview TEXT NOT NULL,
+                image_thumb TEXT,
+                is_favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+db = Database(DB_URL)
+db.init_db()
 
 # ---------- Models ----------
 class RegisterIn(BaseModel):
@@ -141,38 +197,26 @@ async def current_user(creds: Optional[HTTPAuthorizationCredentials] = Depends(b
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, email, name, created_at FROM users WHERE id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    
+    row = db.fetchone("SELECT id, email, name, created_at FROM users WHERE id = ?", (user_id,))
     if not row:
         raise HTTPException(status_code=401, detail="User not found")
-    return dict(row)
+    return row
 
 # ---------- Auth ----------
 @api.post("/auth/register", response_model=AuthOut)
 async def register(body: RegisterIn):
     email = body.email.lower().strip()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
-    if cursor.fetchone():
-        conn.close()
+    if db.fetchone("SELECT id FROM users WHERE email = ?", (email,)):
         raise HTTPException(status_code=400, detail="Email already registered")
     
     user_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
     password_hash = hash_password(body.password)
     
-    cursor.execute(
+    db.execute(
         "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
         (user_id, email, body.name, password_hash, created_at)
     )
-    conn.commit()
-    conn.close()
     
     user_out = UserOut(id=user_id, email=email, name=body.name, created_at=created_at)
     return AuthOut(token=make_token(user_id), user=user_out)
@@ -180,13 +224,7 @@ async def register(body: RegisterIn):
 @api.post("/auth/login", response_model=AuthOut)
 async def login(body: LoginIn):
     email = body.email.lower().strip()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
-    row = cursor.fetchone()
-    conn.close()
-    
+    row = db.fetchone("SELECT * FROM users WHERE email = ?", (email,))
     if not row or not verify_password(body.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
@@ -204,19 +242,16 @@ async def transcribe(file: UploadFile = File(...), user: dict = Depends(current_
     if not raw:
         raise HTTPException(status_code=400, detail="Empty audio")
     
-    # Save uploaded audio file to a temporary file locally
     suffix = Path(file.filename).suffix if file.filename else ".m4a"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
         tmp_file.write(raw)
         tmp_path = tmp_file.name
 
     try:
-        # Upload the temporary audio file to Gemini
         logger.info(f"Uploading audio file {tmp_path} to Gemini...")
         uploaded_file = genai_client.files.upload(file=tmp_path)
         logger.info(f"Uploaded successfully. Name: {uploaded_file.name}")
         
-        # Use Gemini to transcribe the audio
         logger.info("Transcribing audio using gemini-2.5-flash...")
         response = genai_client.models.generate_content(
             model="gemini-2.5-flash",
@@ -227,14 +262,12 @@ async def transcribe(file: UploadFile = File(...), user: dict = Depends(current_
         )
         text = response.text or ""
         
-        # Clean up the file on Gemini
         logger.info("Deleting file from Gemini...")
         genai_client.files.delete(name=uploaded_file.name)
     except Exception as e:
         logger.exception("Transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
     finally:
-        # Clean up temporary file locally
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
             
@@ -320,14 +353,10 @@ async def generate_quote(body: GenerateIn, user: dict = Depends(current_user)):
     quote_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
     
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
+    db.execute("""
         INSERT INTO quotes (id, user_id, quote, attribution, mood, source_type, input_preview, is_favorite, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
     """, (quote_id, user["id"], parsed["quote"], "— Muse", parsed["mood"], body.source_type, input_preview, created_at))
-    conn.commit()
-    conn.close()
     
     return QuoteOut(
         id=quote_id,
@@ -343,15 +372,10 @@ async def generate_quote(body: GenerateIn, user: dict = Depends(current_user)):
 
 @api.get("/quotes", response_model=List[QuoteOut])
 async def list_quotes(favorites_only: bool = False, user: dict = Depends(current_user)):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
     if favorites_only:
-        cursor.execute("SELECT * FROM quotes WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC", (user["id"],))
+        rows = db.fetchall("SELECT * FROM quotes WHERE user_id = ? AND is_favorite = 1 ORDER BY created_at DESC", (user["id"],))
     else:
-        cursor.execute("SELECT * FROM quotes WHERE user_id = ? ORDER BY created_at DESC", (user["id"],))
-    rows = cursor.fetchall()
-    conn.close()
+        rows = db.fetchall("SELECT * FROM quotes WHERE user_id = ? ORDER BY created_at DESC", (user["id"],))
     
     out = []
     for r in rows:
@@ -362,12 +386,7 @@ async def list_quotes(favorites_only: bool = False, user: dict = Depends(current
 
 @api.get("/quotes/{quote_id}", response_model=QuoteOut)
 async def get_quote(quote_id: str, user: dict = Depends(current_user)):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
-    row = cursor.fetchone()
-    conn.close()
+    row = db.fetchone("SELECT * FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     
@@ -377,35 +396,21 @@ async def get_quote(quote_id: str, user: dict = Depends(current_user)):
 
 @api.post("/quotes/{quote_id}/favorite", response_model=QuoteOut)
 async def toggle_favorite(quote_id: str, user: dict = Depends(current_user)):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT is_favorite FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
-    row = cursor.fetchone()
+    row = db.fetchone("SELECT is_favorite FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
     if not row:
-        conn.close()
         raise HTTPException(status_code=404, detail="Not found")
     
     new_val = 0 if row["is_favorite"] else 1
-    cursor.execute("UPDATE quotes SET is_favorite = ? WHERE id = ?", (new_val, quote_id))
-    conn.commit()
+    db.execute("UPDATE quotes SET is_favorite = ? WHERE id = ?", (new_val, quote_id))
     
-    cursor.execute("SELECT * FROM quotes WHERE id = ?", (quote_id,))
-    row = cursor.fetchone()
-    conn.close()
-    
+    row = db.fetchone("SELECT * FROM quotes WHERE id = ?", (quote_id,))
     d = dict(row)
     d["is_favorite"] = bool(d["is_favorite"])
     return QuoteOut(**d)
 
 @api.delete("/quotes/{quote_id}")
 async def delete_quote(quote_id: str, user: dict = Depends(current_user)):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
+    deleted = db.execute("DELETE FROM quotes WHERE id = ? AND user_id = ?", (quote_id, user["id"]))
     if deleted == 0:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
