@@ -233,13 +233,22 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.container}>
       {/* Top Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.push("/history")} style={styles.iconButton}>
+        <TouchableOpacity 
+          onPress={() => router.push("/history")} 
+          style={[styles.iconButton, Platform.OS === "web" ? { cursor: "pointer" } as any : undefined]}
+        >
           <Feather name="book-open" size={20} color={colors.onSurfaceSecondary} />
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => router.replace("/home")}>
+        <TouchableOpacity 
+          onPress={() => router.replace("/home")}
+          style={Platform.OS === "web" ? { cursor: "pointer" } as any : undefined}
+        >
           <Text style={styles.headerTitle}>MUSE</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={logout} style={styles.iconButton}>
+        <TouchableOpacity 
+          onPress={logout} 
+          style={[styles.iconButton, Platform.OS === "web" ? { cursor: "pointer" } as any : undefined]}
+        >
           <Feather name="log-out" size={20} color={colors.onSurfaceSecondary} />
         </TouchableOpacity>
       </View>
