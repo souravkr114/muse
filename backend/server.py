@@ -252,6 +252,19 @@ async def transcribe(file: UploadFile = File(...), user: dict = Depends(current_
         uploaded_file = genai_client.files.upload(file=tmp_path)
         logger.info(f"Uploaded successfully. Name: {uploaded_file.name}")
         
+        # Wait for the uploaded file to become ACTIVE
+        import time
+        max_attempts = 15
+        attempts = 0
+        while uploaded_file.state.name == "PROCESSING" and attempts < max_attempts:
+            logger.info("Waiting for audio file to process...")
+            time.sleep(0.5)
+            uploaded_file = genai_client.files.get(name=uploaded_file.name)
+            attempts += 1
+            
+        if uploaded_file.state.name == "FAILED":
+            raise Exception("File processing failed on Gemini")
+            
         logger.info("Transcribing audio using gemini-2.5-flash...")
         response = genai_client.models.generate_content(
             model="gemini-2.5-flash",
