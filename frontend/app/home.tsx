@@ -103,7 +103,9 @@ export default function HomeScreen() {
         if (Platform.OS === "web") {
           const response = await fetch(uri);
           const blob = await response.blob();
-          formData.append("file", blob, "voice.m4a");
+          const mimeType = blob.type.split(";")[0] || "audio/webm";
+          const extension = mimeType.includes("webm") ? "webm" : "m4a";
+          formData.append("file", blob, `voice.${extension}`);
         } else {
           formData.append("file", {
             uri,
@@ -234,7 +236,9 @@ export default function HomeScreen() {
         <TouchableOpacity onPress={() => router.push("/history")} style={styles.iconButton}>
           <Feather name="book-open" size={20} color={colors.onSurfaceSecondary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>MUSE</Text>
+        <TouchableOpacity onPress={() => router.replace("/home")}>
+          <Text style={styles.headerTitle}>MUSE</Text>
+        </TouchableOpacity>
         <TouchableOpacity onPress={logout} style={styles.iconButton}>
           <Feather name="log-out" size={20} color={colors.onSurfaceSecondary} />
         </TouchableOpacity>
