@@ -11,6 +11,7 @@ import {
   Image,
   Alert,
   Dimensions,
+  Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { BlurView } from "expo-blur";
@@ -98,19 +99,22 @@ export default function HomeScreen() {
         // Transcribe voice audio
         setIsTranscribing(true);
         const formData = new FormData();
-        // Construct the file part
-        formData.append("file", {
-          uri,
-          name: "voice.m4a",
-          type: "audio/m4a",
-        } as any);
+        // Construct the file part (platform-specific)
+        if (Platform.OS === "web") {
+          const response = await fetch(uri);
+          const blob = await response.blob();
+          formData.append("file", blob, "voice.m4a");
+        } else {
+          formData.append("file", {
+            uri,
+            name: "voice.m4a",
+            type: "audio/m4a",
+          } as any);
+        }
 
         const res = await apiFetch("/api/transcribe", {
           method: "POST",
           body: formData,
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
         });
 
         const data = await res.json();
