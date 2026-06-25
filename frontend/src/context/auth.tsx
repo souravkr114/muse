@@ -63,6 +63,18 @@ const tokenStorage = {
   }
 };
 
+const parseErrorDetail = (detail: any): string => {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((err) => `${err.loc?.[1] || "field"}: ${err.msg}`).join("\n");
+  }
+  if (typeof detail === "object") {
+    return JSON.stringify(detail);
+  }
+  return String(detail);
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -109,7 +121,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.detail || "Failed to login");
+        const errMsg = parseErrorDetail(data.detail) || "Failed to login";
+        throw new Error(errMsg);
       }
       await tokenStorage.setItem("muse_token", data.token);
       setToken(data.token);
@@ -137,7 +150,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.detail || "Failed to register");
+        const errMsg = parseErrorDetail(data.detail) || "Failed to register";
+        throw new Error(errMsg);
       }
       await tokenStorage.setItem("muse_token", data.token);
       setToken(data.token);

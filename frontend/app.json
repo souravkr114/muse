@@ -17,6 +17,7 @@
       }
     },
     "android": {
+      "package": "com.soura.muse",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#121110"
